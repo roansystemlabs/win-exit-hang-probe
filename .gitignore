@@ -1,0 +1,5 @@
+build/
+*.obj
+*.pdb
+__pycache__/
+results*.json

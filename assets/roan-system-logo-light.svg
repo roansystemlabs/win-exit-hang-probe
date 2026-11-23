@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 528 128" width="528" height="128">
+  <title>Roan System</title>
+  <g transform="translate(-17.6 -12.8) scale(0.3)" fill="#0f9eae">
+    <path d="M136 58 C96 90 72 142 72 200 C72 262 146 342 256 455 L440 166 L440 56 L337 167 L258 374 C226 300 124 196 136 58 Z"/>
+    <path d="M256 60 Q263 111 304 118 Q263 125 256 176 Q249 125 208 118 Q249 111 256 60 Z"/>
+  </g>
+  <g transform="translate(144.4 44) scale(0.4)" fill="#000a10" fill-rule="evenodd">
+    <path d="M0 0H52L70 18V42L56 56L72 100H54L40 58H16V100H0Z M16 16V42H47.4L54 35.4V24.6L45.4 16Z"/>
+    <path transform="translate(94 0)" d="M22 0H54L76 22V78L54 100H22L0 78V22Z M31.4 16L16 31.4V68.6L31.4 84H44.6L60 68.6V31.4L44.6 16Z"/>
+    <path transform="translate(190 0)" d="M30 0H46L76 100H59L51.8 76H24.2L17 100H0Z M38 30L28.4 62H47.6Z"/>
+    <path transform="translate(286 0)" d="M0 0H18L56 64V0H72V100H56L16 32V100H0Z"/>
+    <path transform="translate(418 0)" d="M0 18L18 0H68V16H27L16 27V31L27 42H50L68 60V82L50 100H0V84H41L52 73V69L41 58H18L0 40Z"/>
+    <path transform="translate(506 0)" d="M0 0H19L36 31.6L53 0H72L44 52V100H28V52Z"/>
+    <path transform="translate(598 0)" d="M0 18L18 0H68V16H27L16 27V31L27 42H50L68 60V82L50 100H0V84H41L52 73V69L41 58H18L0 40Z"/>
+    <path transform="translate(688 0)" d="M0 0H64V16H40V100H24V16H0Z"/>
+    <path transform="translate(774 0)" d="M0 0H64V16H16V42H56V58H16V84H64V100H0Z"/>
+    <path transform="translate(862 0)" d="M0 0H18L43 44L68 0H86V100H70V32L51 66H35L16 32V100H0Z"/>
+  </g>
+</svg>
