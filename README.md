@@ -66,11 +66,15 @@ python exit_hang_probe.py --pid 12345
 
 A launch counts as finished only when the process has ended **and** both pipes reached EOF
 within the timeout. Exit codes: `0` no hang, `1` at least one launch hung, `2` usage error
-(including a `--json` file that cannot be written), a program that cannot be started, or a
-process that cannot be opened, `130` stopped with Ctrl+C.
+(including a `--json` file that cannot be written, before or after the run), a program that
+cannot be started, or a process that cannot be opened, `130` stopped with Ctrl+C.
 
 The `--json` file is checked before anything is launched, then replaced in one step at most
-every 2 s while launches finish, so a run that is killed keeps the launches already done.
+every 2 s while launches finish, so a run that is killed keeps the launches already done. A
+program reading the file never sees it half written, but may briefly find it missing or locked; retry.
+If a reader keeps the file open so that it cannot be replaced, an update during the run is
+skipped with a warning on stderr (the result and the exit code do not change), and the final
+file is written in place.
 
 **How long it takes.** A launch that finishes costs its own run time. A hung launch costs
 `--timeout`, then up to `--linger` more: with the defaults, about 35 s. So 20 launches of a
@@ -297,8 +301,9 @@ fix) gave 200 of 200 launches finished, exit code `0x60d`, with 8 in flight.
 - **1.1.1**: a `--json` path that cannot be written (missing folder, a folder, a read-only
   file) is now a usage error (exit code `2`) found before the first launch, instead of a
   traceback with exit code `1` after the run; the file is written as launches finish
-  (`"partial": true` until the end) and replaced in one step, so a killed run keeps its data.
-  A second Ctrl+C that arrives while the first is still terminating the launches now always
+  (`"partial": true` until the end) and replaced in one step, so a killed run keeps its data;
+  a reader that keeps the file open no longer turns the run into exit code `2` (updates are
+  skipped with a warning, the final file is written in place). A second Ctrl+C that arrives while the first is still terminating the launches now always
   exits with `130`.
 - **1.1.0**: each launch runs in its own job object (children and grandchildren are terminated
   too); Ctrl+C stops new launches and terminates those in flight; limits on every option, and

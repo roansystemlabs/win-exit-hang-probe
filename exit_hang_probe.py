@@ -743,7 +743,8 @@ def parse_args():
                     "none, stdin is closed at once)")
     ap.add_argument("--show", type=int, default=3,
                     help="hung launches to print in full (default 3; all are in --json)")
-    ap.add_argument("--json", help="write every launch and the summary to this file")
+    ap.add_argument("--json", help="write every launch and the summary to this file "
+                                   "(updated as launches finish)")
     ap.add_argument("--no-banner", action="store_true", help="skip the start-up header")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("program", nargs=argparse.REMAINDER, help="-- PROGRAM [ARGS...]")
@@ -781,19 +782,39 @@ def parse_args():
     return a
 
 
-def write_json(path, data):
-    """Replace path in one step: a reader sees the previous content or the new one, never half."""
+REPLACE_WAITS_S = (0.02, 0.05, 0.1, 0.2)  # retries when a reader holds the --json file
+
+
+def write_json(path, data, in_place_fallback=True):
+    """Replace path in one step: a reader sees the previous content or the new one, never half.
+
+    A reader that keeps the file open without delete sharing (Python's open(), a .NET
+    FileStream) makes the replace fail with access denied. After a few short retries the
+    file is then rewritten in place, as 1.1.0 did, unless in_place_fallback is False (updates
+    during the run: those are skipped instead, and the next one tries again)."""
+    text = json.dumps(data, indent=1)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf8") as f:
-            json.dump(data, f, indent=1)
-        os.replace(tmp, path)
-    except OSError:
+            f.write(text)
+        for wait_s in REPLACE_WAITS_S + (None,):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if wait_s is None:
+                    if not in_place_fallback:
+                        raise
+                    break
+                # during the run, wait less: the launches are waiting for this thread
+                time.sleep(wait_s if in_place_fallback else wait_s / 4)
+        with open(path, "w", encoding="utf8") as f:
+            f.write(text)
+    finally:
         try:
             os.remove(tmp)
         except OSError:
             pass
-        raise
 
 
 def summarize(a, results, interrupted):
@@ -819,13 +840,17 @@ def main():
     warned = []
 
     def checkpoint(done):
+        # An update that fails never changes the result or the exit code: warn once and go on;
+        # the next update and the final write try again.
         try:
             write_json(a.json, {"version": __version__, "partial": True,
-                                "summary": summarize(a, done, False), "launches": done})
+                                "summary": summarize(a, done, False), "launches": done},
+                       in_place_fallback=False)
         except OSError as e:
-            if not warned:  # keep going: the run matters more; the final write tries again
+            if not warned:
                 warned.append(e)
-                print(f"exit_hang_probe.py: warning: cannot update {a.json}: {e.strerror or e}",
+                print(f"exit_hang_probe.py: warning: cannot update {a.json} during the run "
+                      f"({e.strerror or e}); the run goes on, the file is written at the end",
                       file=sys.stderr)
 
     try:
