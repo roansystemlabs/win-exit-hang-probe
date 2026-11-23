@@ -15,11 +15,14 @@
 //      ExitProcess: the process is gone but the pipes stay open ~5 s    -> "pipe held" case
 //   9  (internal) the child used by mode 4: sleeps 5 s, then exits
 //
-// The entry returns 0x60d in every mode, so a different exit code shows which thread ended
-// the process last.
+// In modes 0-3 the entry returns 0x60d, so a different exit code shows which thread ended
+// the process last. Mode 4 calls ExitProcess(0x60d); mode 9 calls ExitProcess(0).
+// Started by hand from a console, modes 1 and 2 stay running until you close them (that is
+// the point: they are the hangs).
 //
-// Build (from a "x64 Native Tools Command Prompt"; build.cmd does the same):
-//   cl /nologo /O1 /GS- repro\exit_hang_repro.c /Fobuild\ /Febuild\exit_hang_repro.exe
+// Build (from a "x64 Native Tools Command Prompt"; build.cmd does the same and creates
+// build\ first):
+//   cl /nologo /O1 /GS- /W4 repro\exit_hang_repro.c /Fobuild\ /Febuild\exit_hang_repro.exe
 //      /link /ENTRY:start /NODEFAULTLIB /SUBSYSTEM:CONSOLE kernel32.lib
 #include <windows.h>
 
