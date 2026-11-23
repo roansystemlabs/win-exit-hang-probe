@@ -60,13 +60,17 @@ python exit_hang_probe.py --pid 12345
 | `--priority normal\|below` | priority class of the launched program |
 | `--stdin-hex HEX` | bytes written to stdin, e.g. `0d0a` (default: none, stdin is closed at once) |
 | `--show N` | hung launches printed in full (default 3) |
-| `--json FILE` | every launch, the summary and all thread data as JSON |
+| `--json FILE` | every launch, the summary and all thread data as JSON; created before the first launch and updated as launches finish (`"partial": true` until the run ends) |
 | `--no-banner` | skip the start-up header (it is also skipped when the output is redirected) |
 | `--version`, `-h` | print the version, or the help |
 
 A launch counts as finished only when the process has ended **and** both pipes reached EOF
-within the timeout. Exit codes: `0` no hang, `1` at least one launch hung, `2` usage error, a
-program that cannot be started, or a process that cannot be opened, `130` stopped with Ctrl+C.
+within the timeout. Exit codes: `0` no hang, `1` at least one launch hung, `2` usage error
+(including a `--json` file that cannot be written), a program that cannot be started, or a
+process that cannot be opened, `130` stopped with Ctrl+C.
+
+The `--json` file is checked before anything is launched, then replaced in one step at most
+every 2 s while launches finish, so a run that is killed keeps the launches already done.
 
 **How long it takes.** A launch that finishes costs its own run time. A hung launch costs
 `--timeout`, then up to `--linger` more: with the defaults, about 35 s. So 20 launches of a
@@ -287,6 +291,19 @@ fix) gave 200 of 200 launches finished, exit code `0x60d`, with 8 in flight.
   (the summary says so), and on Ctrl+C. Processes that the program asks someone else to start
   (a service, a scheduled task, an already running server) are not in its job and are not
   touched. In `--pid` mode nothing is terminated.
+
+## Changelog
+
+- **1.1.1**: a `--json` path that cannot be written (missing folder, a folder, a read-only
+  file) is now a usage error (exit code `2`) found before the first launch, instead of a
+  traceback with exit code `1` after the run; the file is written as launches finish
+  (`"partial": true` until the end) and replaced in one step, so a killed run keeps its data.
+  A second Ctrl+C that arrives while the first is still terminating the launches now always
+  exits with `130`.
+- **1.1.0**: each launch runs in its own job object (children and grandchildren are terminated
+  too); Ctrl+C stops new launches and terminates those in flight; limits on every option, and
+  usage errors exit with `2`.
+- **1.0.0**: first release.
 
 ## Credits
 

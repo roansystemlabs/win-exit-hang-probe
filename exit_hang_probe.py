@@ -32,7 +32,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from ctypes import wintypes as W
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 if os.name != "nt":
     sys.exit("win-exit-hang-probe runs on Windows only")
@@ -126,6 +126,7 @@ CREATE_SUSPENDED, BELOW_NORMAL_PRIORITY_CLASS, STILL_ACTIVE = 0x4, 0x4000, 0x103
 JOB_PROCESS_ID_LIST, JOB_EXTENDED_LIMITS, JOB_KILL_ON_CLOSE = 3, 9, 0x2000
 WAIT_OBJECT_0 = 0
 MAX_SECONDS = 86400  # --timeout and --linger: Windows waits take milliseconds in 32 bits
+CHECKPOINT_S = 2  # --json is rewritten at most this often while launches finish
 CRT_MODULES = ("ucrtbase", "msvcrt", "msvcr", "vcruntime", "msvcp")
 IGNORED_CHILDREN = {"conhost.exe"}  # the console host every console program gets
 
@@ -333,7 +334,9 @@ def hints(rec):
 # ---------------------------------------------------------------- jobs and stopping
 
 STOP = threading.Event()  # set by Ctrl+C or by a launch that cannot start
-_live_jobs, _jobs_lock = set(), threading.Lock()
+# Re-entrant: a Ctrl+C handler can run on the main thread while it already holds the lock
+# (inside stop_all), and must not wait for itself.
+_live_jobs, _jobs_lock = set(), threading.RLock()
 
 
 class Job:
@@ -576,8 +579,11 @@ class Progress:
             sys.stderr.flush()
 
 
-def run_launches(cmd, a, stdin_bytes, tpp):
-    """All launches. Returns (records, interrupted); records keep launch order."""
+def run_launches(cmd, a, stdin_bytes, tpp, checkpoint=None):
+    """All launches. Returns (records, interrupted); records keep launch order.
+
+    checkpoint(records), if given, is called from this thread with the launches done so far,
+    at most every CHECKPOINT_S seconds."""
     results = [None] * a.runs
     progress = Progress(a.runs, a.linger)
 
@@ -588,8 +594,10 @@ def run_launches(cmd, a, stdin_bytes, tpp):
             progress.finished(results[i])
 
     def on_ctrl_c(signum, frame):
-        if STOP.is_set():  # second Ctrl+C: leave now; closing the jobs ends every tree
-            stop_all()
+        if STOP.is_set():
+            # Second Ctrl+C: leave now without touching the jobs (the first one may still be
+            # terminating them). Exiting closes every job handle, and kill-on-close ends
+            # every launched process tree.
             sys.stderr.write("\nsecond Ctrl+C: leaving now; every launched process is terminated\n")
             sys.stderr.flush()
             os._exit(130)
@@ -598,6 +606,7 @@ def run_launches(cmd, a, stdin_bytes, tpp):
     previous = signal.signal(signal.SIGINT, on_ctrl_c)
     pool = ThreadPoolExecutor(a.parallel)
     error, in_flight, next_run = None, set(), 0
+    saved_at, unsaved = time.monotonic(), False
     try:
         while True:
             # Submit only what can run now, so a stop leaves nothing queued.
@@ -611,6 +620,10 @@ def run_launches(cmd, a, stdin_bytes, tpp):
                 if f.exception() is not None and error is None:
                     error = f.exception()
                     stop_all()
+            unsaved = unsaved or bool(done)
+            if checkpoint and unsaved and time.monotonic() - saved_at >= CHECKPOINT_S:
+                checkpoint([r for r in results if r is not None])
+                saved_at, unsaved = time.monotonic(), False
             progress.show()
     finally:
         pool.shutdown(wait=True)
@@ -755,47 +768,87 @@ def parse_args():
         if not found:
             ap.error(f"program not found: {a.cmd[0]}")
         a.cmd = [found] + a.cmd[1:]
+    if a.json:
+        # Checked last, before anything is launched: the file is created now ("partial": true)
+        # so that a path that cannot be written is a usage error, not a lost run.
+        a.json = os.path.abspath(a.json)
+        if os.path.isdir(a.json):
+            ap.error(f"--json must name a file, not a folder: {a.json}")
+        try:
+            write_json(a.json, {"version": __version__, "partial": True, "launches": []})
+        except OSError as e:
+            ap.error(f"cannot write the --json file {a.json}: {e.strerror or e}")
     return a
 
 
 def write_json(path, data):
-    with open(path, "w", encoding="utf8") as f:
-        json.dump(data, f, indent=1)
+    """Replace path in one step: a reader sees the previous content or the new one, never half."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def summarize(a, results, interrupted):
+    ok = [r for r in results if r["ok"]]
+    codes = {}
+    for r in ok:
+        codes[r["exit_code"]] = codes.get(r["exit_code"], 0) + 1
+    return {"program": os.path.basename(a.cmd[0]), "runs": a.runs,
+            "completed": len(results), "interrupted": interrupted, "parallel": a.parallel,
+            "priority": a.priority, "timeout_s": a.timeout, "linger_s": a.linger,
+            "finished": len(ok), "hung": len(results) - len(ok),
+            "exit_codes": {f"0x{c & 0xffffffff:x}": n for c, n in sorted(codes.items())},
+            "slowest_ms": max((r["ms"] for r in ok), default=None),
+            "finished_but_left_processes": sum(1 for r in ok if r.get("left_running")),
+            "tpp_worker_ntdll_offsets": [hex(o) for o in sorted(a.tpp)]}
 
 
 def main():
     a = parse_args()
     if not (a.no_banner or not sys.stdout.isatty()):
         print_banner()
-    tpp = tpp_worker_offsets()
+    tpp = a.tpp = tpp_worker_offsets()
+    warned = []
+
+    def checkpoint(done):
+        try:
+            write_json(a.json, {"version": __version__, "partial": True,
+                                "summary": summarize(a, done, False), "launches": done})
+        except OSError as e:
+            if not warned:  # keep going: the run matters more; the final write tries again
+                warned.append(e)
+                print(f"exit_hang_probe.py: warning: cannot update {a.json}: {e.strerror or e}",
+                      file=sys.stderr)
+
     try:
         if a.pid is not None:
             rec = snapshot(a.pid, tpp)
             print_record(rec, "snapshot")
             if a.json:
-                write_json(a.json, {"version": __version__, "snapshot": rec})
+                return final_json(a.json, {"version": __version__, "partial": False,
+                                           "snapshot": rec}, 0)
             return 0
-        results, interrupted = run_launches(a.cmd, a, a.stdin_bytes, tpp)
+        results, interrupted = run_launches(a.cmd, a, a.stdin_bytes, tpp,
+                                            checkpoint if a.json else None)
     except ProbeError as e:
         print(f"exit_hang_probe.py: error: {e}", file=sys.stderr)
         return 2
     ok = [r for r in results if r["ok"]]
     hung = [r for r in results if not r["ok"]]
     left = [r for r in ok if r.get("left_running")]
-    codes, left_names = {}, {}
-    for r in ok:
-        codes[r["exit_code"]] = codes.get(r["exit_code"], 0) + 1
+    left_names = {}
     for r in left:
         for c in r["left_running"]:
             left_names[c["name"]] = left_names.get(c["name"], 0) + 1
-    summary = {"program": os.path.basename(a.cmd[0]), "runs": a.runs,
-               "completed": len(results), "interrupted": interrupted, "parallel": a.parallel,
-               "priority": a.priority, "timeout_s": a.timeout, "linger_s": a.linger,
-               "finished": len(ok), "hung": len(hung),
-               "exit_codes": {f"0x{c & 0xffffffff:x}": n for c, n in sorted(codes.items())},
-               "slowest_ms": max((r["ms"] for r in ok), default=None),
-               "finished_but_left_processes": len(left),
-               "tpp_worker_ntdll_offsets": [hex(o) for o in sorted(tpp)]}
+    summary = summarize(a, results, interrupted)
     runs = f"{a.runs} run{'s' if a.runs != 1 else ''}"
     runs = f"{len(results)} of {runs}" if interrupted else runs
     print(f"{summary['program']}: {runs} ({a.parallel} in flight, {a.priority} priority), "
@@ -813,13 +866,25 @@ def main():
         more = len(hung) - a.show
         print(f"\n({more} more hung launch{'es' if more > 1 else ''} not shown; "
               "use --show or --json)")
-    if a.json:
-        write_json(a.json, {"version": __version__, "summary": summary, "launches": results})
     if interrupted:
         print(f"interrupted by Ctrl+C after {len(results)} of {a.runs} launches; every launched "
               "process was terminated", file=sys.stderr)
-        return 130
-    return 1 if hung else 0
+    code = 130 if interrupted else 1 if hung else 0
+    if a.json:
+        return final_json(a.json, {"version": __version__, "partial": False, "summary": summary,
+                                   "launches": results}, code)
+    return code
+
+
+def final_json(path, data, code):
+    """Write the finished --json file; if that fails, say so and exit with 2, not the result."""
+    try:
+        write_json(path, data)
+    except OSError as e:
+        print(f"exit_hang_probe.py: error: cannot write {path}: {e.strerror or e}",
+              file=sys.stderr)
+        return 2
+    return code
 
 
 if __name__ == "__main__":
